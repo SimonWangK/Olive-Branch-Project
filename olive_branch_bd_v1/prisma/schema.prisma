@@ -1,0 +1,220 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Event {
+  id          Int      @id @default(autoincrement())
+  case_id     Int?     // Nullable, as login events may not be case-specific
+  user_id     Int?     // User who triggered the event
+  type        String   // e.g., "LOGIN_SUCCESS", "LOGIN_FAILED"
+  data        Json?    // Details, e.g., { "ip": "x.x.x.x", "userAgent": "..." }
+  created_at  DateTime @default(now())
+  user        User?    @relation(fields: [user_id], references: [id])
+  case        Case?    @relation(fields: [case_id], references: [id])
+}
+
+model User {
+  id              Int              @id @default(autoincrement())
+  name            String
+  email           String           @unique
+  password        String           // Hashed password (using bcrypt)
+  role            String           @default("staff") // admin, staff, viewer
+  created_at      DateTime         @default(now())
+  time_entries    TimeEntry[]
+  case_history    CaseHistory[]
+  invoices        Invoice[]
+  approved_versions DocumentVersion[]
+  tasks           Task[]
+  events          Event[]          // Audit events triggered by this user
+}
+
+model Case {
+  id               Int              @id @default(autoincrement())
+  case_type        String
+  jurisdiction     String
+  description      String?
+  status           String           @default("ACTIVE") // ACTIVE, ON_HOLD, CLOSED
+  opened_at        DateTime
+  target_close     DateTime?
+  version          Int              @default(1)
+  updated_at       DateTime         @default(now())
+  financials       CaseFinancial?
+  invoices         Invoice[]
+  payments         Payment[]
+  history          CaseHistory[]
+  compliance_items ComplianceItem[]
+  time_entries     TimeEntry[]
+  expenses         Expense[]
+  tasks            Task[]
+  documents        Document[]
+  events           Event[]          // Audit events related to this case
+}
+
+
+model CaseFinancial {
+  case_id         Int  @id
+  case            Case @relation(fields: [case_id], references: [id])
+  budget_cents    Int
+  write_off_cents Int @default(0)
+  balance_due     Int  
+}
+
+model TimeEntry {
+  id            Int       @id @default(autoincrement())
+  case_id       Int
+  case          Case      @relation(fields: [case_id], references: [id])
+  user_id       Int
+  user          User      @relation(fields: [user_id], references: [id])
+  date          DateTime
+  hours         Decimal   @db.Decimal(6, 2)
+  rate_cents    Int
+  taxable       Boolean
+  notes         String?
+  created_at    DateTime  @default(now())
+  invoice_lines InvoiceLine[] @relation("TimeEntryToInvoiceLine")
+}
+
+model Expense {
+  id            Int       @id @default(autoincrement())
+  case_id       Int
+  case          Case      @relation(fields: [case_id], references: [id])
+  date          DateTime
+  description   String
+  amount_cents  Int
+  taxable       Boolean
+  vendor        String?
+  invoice_lines InvoiceLine[] @relation("ExpenseToInvoiceLine")
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PART_PAID
+  PAID
+  VOID
+}
+
+enum InvoiceLineKind {
+  TIME
+  EXPENSE
+  FEE
+}
+
+enum PaymentMethod {
+  CASH
+  BANK
+  CARD
+  OTHER
+}
+
+
+
+
+
+model Invoice {
+  id             Int            @id @default(autoincrement())
+  case_id        Int
+  case           Case           @relation(fields: [case_id], references: [id])
+  number         String         @unique
+  issue_date     DateTime
+  due_date       DateTime
+  subtotal_cents Int
+  tax_cents      Int
+  total_cents    Int
+  status         InvoiceStatus  @default(DRAFT)
+  created_by     Int
+  creator        User           @relation(fields: [created_by], references: [id])
+  lines          InvoiceLine[]
+  payments       Payment[]
+}
+
+model InvoiceLine {
+  id                  Int             @id @default(autoincrement())
+  invoice_id          Int
+  invoice             Invoice         @relation(fields: [invoice_id], references: [id])
+  kind                InvoiceLineKind
+  ref_id              Int?
+  qty                 Decimal         @db.Decimal(8, 2)
+  unit_rate_cents     Int
+  line_subtotal_cents Int
+  tax_cents           Int
+  line_total_cents    Int
+  description         String
+  time_entry          TimeEntry?      @relation("TimeEntryToInvoiceLine", fields: [ref_id], references: [id], map: "fk_invoice_line_time_entry")
+  expense             Expense?        @relation("ExpenseToInvoiceLine", fields: [ref_id], references: [id], map: "fk_invoice_line_expense")
+}
+
+model Payment {
+  id           Int           @id @default(autoincrement())
+  case_id      Int
+  case         Case          @relation(fields: [case_id], references: [id])
+  invoice_id   Int
+  invoice      Invoice       @relation(fields: [invoice_id], references: [id])
+  date         DateTime
+  amount_cents Int
+  method       PaymentMethod
+  reference    String?
+}
+
+model CaseHistory {
+  id          Int        @id @default(autoincrement())
+  case_id     Int
+  case        Case       @relation(fields: [case_id], references: [id])
+  changed_by  Int
+  changer     User       @relation(fields: [changed_by], references: [id])
+  changed_at  DateTime   @default(now())
+  field       String
+  old_value   String?
+  new_value   String?
+}
+
+
+
+
+model ComplianceItem {
+  id        Int       @id @default(autoincrement())
+  case_id   Int
+  case      Case      @relation(fields: [case_id], references: [id])
+  title     String
+  mandatory Boolean   @default(true)
+  due_at    DateTime?
+  status    String    @default("PENDING") // PENDING, DONE, OVERDUE
+}
+
+model Task {
+  id          Int      @id @default(autoincrement())
+  case_id     Int
+  case        Case     @relation(fields: [case_id], references: [id])
+  title       String
+  assignee_id Int?
+  assignee    User?    @relation(fields: [assignee_id], references: [id])
+  due_at      DateTime?
+  status      String   @default("TODO") // TODO | IN_PROGRESS | DONE | OVERDUE
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+}
+
+model Document {
+  id        Int              @id @default(autoincrement())
+  case_id   Int
+  case      Case             @relation(fields: [case_id], references: [id])
+  title     String
+  versions  DocumentVersion[]
+}
+
+model DocumentVersion {
+  id           Int       @id @default(autoincrement())
+  document_id  Int
+  document     Document  @relation(fields: [document_id], references: [id])
+  version_no   Int
+  url          String
+  approved_by  Int?
+  approved_at  DateTime?
+  approver     User?     @relation(fields: [approved_by], references: [id])
+}
